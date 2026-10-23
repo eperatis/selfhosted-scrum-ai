@@ -4,7 +4,7 @@ Description=Scrum Board
 After=network.target
 
 [Service]
-ExecStart=/home/you/scrum-board/scrum-board -addr :8080 -data board.json
+ExecStart=/home/you/scrum-board/scrum-board -lan
 WorkingDirectory=/home/you/scrum-board
 Restart=always
 User=you

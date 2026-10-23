@@ -43,10 +43,12 @@ scp scrum-board you@server:~/scrum-board/
 ```bash
 ssh you@server
 cd ~/scrum-board
-./scrum-board     # creates board.json here on first save
+./scrum-board -lan     # creates board.json here on first save
 ```
 
 Open `http://server-ip:8080`.
+
+> **Note:** By default the app is only reachable from the same machine, which keeps it private on a laptop on public wifi. `-lan` makes it reachable from the whole network. There is no login, so only use `-lan` on a network you trust.
 
 If the page doesn't load and the server runs Fedora or RHEL, open the port in the firewall:
 
@@ -69,6 +71,14 @@ journalctl -u scrum-board -f          # view logs
 ```
 
 > **Note:** On Fedora or RHEL servers, SELinux may stop systemd from running a binary in your home folder. If `systemctl status` shows a permission error, move the folder to `/opt/scrum-board` and update both paths in the unit file.
+
+## Options
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `-lan` | off | allow other devices on the network to connect |
+| `-port` | `8080` | port to listen on |
+| `-data` | `board.json` | path to the board data file |
 
 ## Updating
 

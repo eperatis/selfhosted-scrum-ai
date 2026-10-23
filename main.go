@@ -4,6 +4,7 @@ import (
 	"embed"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
@@ -16,7 +17,8 @@ import (
 var webFiles embed.FS
 
 var (
-	addr      = flag.String("addr", ":8080", "address to listen on")
+	lan       = flag.Bool("lan", false, "allow other devices on the network to connect")
+	port      = flag.Int("port", 8080, "port to listen on")
 	boardFile = flag.String("data", "board.json", "path to the board JSON file")
 	mu        sync.Mutex
 )
@@ -33,8 +35,14 @@ func main() {
 	http.HandleFunc("GET /api/board", getBoard)
 	http.HandleFunc("PUT /api/board", putBoard)
 
-	log.Printf("listening on %s, data in %s", *addr, *boardFile)
-	log.Fatal(http.ListenAndServe(*addr, nil))
+	host, access := "127.0.0.1", "this machine only"
+	if *lan {
+		host, access = "", "whole network"
+	}
+	addr := fmt.Sprintf("%s:%d", host, *port)
+
+	log.Printf("listening on port %d (%s), data in %s", *port, access, *boardFile)
+	log.Fatal(http.ListenAndServe(addr, nil))
 }
 
 func getBoard(w http.ResponseWriter, r *http.Request) {
