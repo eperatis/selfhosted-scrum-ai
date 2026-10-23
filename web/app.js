@@ -42,6 +42,12 @@ document.addEventListener('DOMContentLoaded', () => {
     applyTheme(localStorage.getItem(THEME_KEY) || 'light');
     renderColumns();
     renderNotifications();
+
+    // Close the notification panel on any click outside of it
+    document.addEventListener('pointerdown', e => {
+        if (!e.target.closest('.notifications')) closeNotifications();
+    });
+
     loadBoard()
         .then(renderBoard)
         .catch(() => notify('Loading failed: could not reach the server'));
@@ -428,6 +434,7 @@ function notify(message) {
 function clearNotifications() {
     notifications = [];
     saveNotifications();
+    closeNotifications();
 }
 
 function saveNotifications() {
@@ -452,4 +459,8 @@ function renderNotifications() {
 
 function toggleNotifications() {
     document.getElementById('notificationPanel').classList.toggle('hidden');
+}
+
+function closeNotifications() {
+    document.getElementById('notificationPanel').classList.add('hidden');
 }

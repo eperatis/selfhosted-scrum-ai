@@ -25,7 +25,10 @@
                 <div id="notificationPanel" class="notification-panel hidden">
                     <div class="notification-panel-header">
                         <span class="label">Notifications</span>
-                        <button onclick="clearNotifications()" class="btn btn-secondary btn-sm">Clear</button>
+                        <div class="notification-panel-actions">
+                            <button onclick="clearNotifications()" class="btn btn-secondary btn-sm">Clear</button>
+                            <button onclick="closeNotifications()" class="icon-btn">&times;</button>
+                        </div>
                     </div>
                     <ul id="notificationList" class="list"></ul>
                 </div>
