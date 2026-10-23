@@ -1,0 +1,6 @@
+# Runtime data
+board.json
+board.json.tmp
+
+# Build output
+scrum-board

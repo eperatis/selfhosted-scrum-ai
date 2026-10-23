@@ -1,0 +1,13 @@
+# Copy to /etc/systemd/system/ and replace "you" with your user
+[Unit]
+Description=Scrum Board
+After=network.target
+
+[Service]
+ExecStart=/home/you/scrum-board/scrum-board -addr :8080 -data board.json
+WorkingDirectory=/home/you/scrum-board
+Restart=always
+User=you
+
+[Install]
+WantedBy=multi-user.target
