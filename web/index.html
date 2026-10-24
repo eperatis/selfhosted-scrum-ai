@@ -43,6 +43,11 @@
     </header>
 
     <section class="toolbar">
+        <div class="board-picker">
+            <select id="boardSelect" onchange="location.hash = this.value" class="input" aria-label="Board"></select>
+            <button onclick="openBoardModal(false)" class="btn btn-secondary" title="Rename or delete this board">Edit</button>
+            <button onclick="openBoardModal(true)" class="btn btn-secondary" title="Create a new board">+ Board</button>
+        </div>
         <button onclick="openTaskModal()" class="btn btn-primary">
             + New Ticket
         </button>
@@ -113,6 +118,36 @@
         </div>
     </div>
 
+    <!-- Board modal (create / rename / delete) -->
+    <div id="boardModal" class="modal hidden">
+        <div class="modal-box">
+            <div class="modal-header">
+                <h3 id="modalBoardTitle">New Board</h3>
+                <button onclick="closeModal('boardModal')" class="icon-btn">&times;</button>
+            </div>
+
+            <div class="modal-body">
+                <form id="boardForm" onsubmit="saveBoardForm(event)" class="form">
+                    <input type="hidden" id="boardIsNew">
+                    <div>
+                        <label class="label" for="boardName">Name *</label>
+                        <input type="text" id="boardName" required class="input">
+                    </div>
+                </form>
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" id="btnDeleteBoard" onclick="deleteCurrentBoard()" class="btn btn-danger">
+                    Delete
+                </button>
+                <div class="modal-footer-right">
+                    <button type="button" onclick="closeModal('boardModal')" class="btn btn-secondary">Cancel</button>
+                    <button type="submit" form="boardForm" class="btn btn-primary">Save</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Script / LLM API info -->
     <div id="apiModal" class="modal hidden">
         <div class="modal-box">
@@ -124,11 +159,14 @@
                 <div>
                     <p>HTTP API:</p>
                     <pre class="code">GET /api/board</pre>
-                    <pre class="code">PUT /api/board   (body: the whole board JSON)</pre>
+                    <pre class="code">PUT /api/board   (body: all boards, { boards: [{ id, name, tasks }] })</pre>
                 </div>
                 <div>
                     <p>Available on <code>window.ScrumAI</code>:</p>
-                    <pre class="code">ScrumAI.getBoardState()</pre>
+                    <pre class="code">ScrumAI.listBoards()</pre>
+                    <pre class="code">ScrumAI.selectBoard(boardId)</pre>
+                    <pre class="code">ScrumAI.addBoard(name)</pre>
+                    <pre class="code">ScrumAI.getBoardState()   (the board on screen)</pre>
                     <pre class="code">ScrumAI.addTask({ title, desc, column, dueDate, blockedBy })</pre>
                     <pre class="code">ScrumAI.moveTask(taskId, column)</pre>
                     <pre class="code">ScrumAI.addComment(taskId, text)</pre>

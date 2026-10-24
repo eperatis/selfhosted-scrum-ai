@@ -88,11 +88,11 @@ scp scrum-board you@server:~/scrum-board/scrum-board.new
 ssh you@server 'cd ~/scrum-board && mv scrum-board.new scrum-board && sudo systemctl restart scrum-board'
 ```
 
-`board.json` isn't touched, so your tickets stay. Copying to `.new` first and then renaming avoids a "text file busy" error while the old binary is still running.
+`board.json` isn't touched, so your tickets stay. A `board.json` from before multiple boards is converted automatically on first load: its tickets end up in a board called "My Board". Copying to `.new` first and then renaming avoids a "text file busy" error while the old binary is still running.
 
 ## Backup
 
-All your data is in one file:
+All your data, every board, is in one file:
 
 ```bash
 scp you@server:~/scrum-board/board.json ./board-backup.json

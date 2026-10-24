@@ -33,6 +33,8 @@ const defaultBoard = {
     ]
 };
 
+// All boards; `board` is the one currently shown
+let data = { boards: [] };
 let board = { tasks: [] };
 let notifications = JSON.parse(localStorage.getItem(NOTIFICATIONS_KEY)) || [];
 let draggedTaskId = null;
@@ -48,8 +50,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!e.target.closest('.notifications')) closeNotifications();
     });
 
+    // The URL hash holds the board id, so each tab can show a different board
+    window.addEventListener('hashchange', () => selectBoard(location.hash.slice(1)));
+
     loadBoard()
-        .then(renderBoard)
+        .then(() => selectBoard(location.hash.slice(1)))
         .catch(() => notify('Loading failed: could not reach the server'));
 });
 
@@ -60,12 +65,17 @@ async function loadBoard() {
     const isFirstRun = res.status === 204;
 
     // First run: the server has no board yet, so upload the old localStorage board (or the demo board)
-    const data = isFirstRun
+    const saved = isFirstRun
         ? JSON.parse(localStorage.getItem(OLD_BOARD_KEY)) || defaultBoard
         : await res.json();
 
-    board = { tasks: data.tasks.map(normalizeTask) };
-    if (isFirstRun) saveBoard();
+    // Files from before multiple boards hold a single { tasks } board
+    const isOldFormat = !saved.boards;
+    const boards = isOldFormat ? [{ id: 'board-main', name: 'My Board', tasks: saved.tasks }] : saved.boards;
+
+    data = { boards: boards.map(b => ({ id: b.id, name: b.name, tasks: b.tasks.map(normalizeTask) })) };
+    board = data.boards[0];
+    if (isFirstRun || isOldFormat) saveBoard();
 }
 
 // Drops fields from older versions (priority, points, tag) and fills in new ones
@@ -88,7 +98,7 @@ async function saveBoard() {
         const res = await fetch('/api/board', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(board, null, 2)
+            body: JSON.stringify(data, null, 2)
         });
         if (!res.ok) throw new Error(res.status);
     } catch {
@@ -127,6 +137,71 @@ function isOverdue(dueDate) {
 function escapeHtml(str) {
     if (!str) return '';
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Boards
+
+function findBoard(id) {
+    return data.boards.find(b => b.id === id);
+}
+
+function selectBoard(id) {
+    board = findBoard(id) || data.boards[0];
+    if (location.hash.slice(1) !== board.id) history.replaceState(null, '', `#${board.id}`);
+    renderBoardSelect();
+    renderBoard();
+}
+
+function renderBoardSelect() {
+    const select = document.getElementById('boardSelect');
+    select.innerHTML = data.boards
+        .map(b => `<option value="${b.id}">${escapeHtml(b.name)}</option>`)
+        .join('');
+    select.value = board.id;
+}
+
+function addBoard(name) {
+    const newBoard = { id: newId('board'), name, tasks: [] };
+    data.boards.push(newBoard);
+    selectBoard(newBoard.id);
+    saveBoard();
+    return newBoard;
+}
+
+function openBoardModal(isNew) {
+    document.getElementById('modalBoardTitle').innerText = isNew ? 'New Board' : 'Edit Board';
+    document.getElementById('boardIsNew').value = isNew ? '1' : '';
+    document.getElementById('boardName').value = isNew ? '' : board.name;
+    // The last board can't be deleted
+    document.getElementById('btnDeleteBoard').classList.toggle('hidden', isNew || data.boards.length < 2);
+    openModal('boardModal');
+    document.getElementById('boardName').focus();
+}
+
+function saveBoardForm(e) {
+    e.preventDefault();
+    const name = document.getElementById('boardName').value.trim();
+    if (document.getElementById('boardIsNew').value) {
+        addBoard(name);
+        notify(`Board created: ${name}`);
+    } else {
+        board.name = name;
+        renderBoardSelect();
+        saveBoard();
+        notify(`Board renamed: ${name}`);
+    }
+    closeModal('boardModal');
+}
+
+function deleteCurrentBoard() {
+    const count = board.tasks.length;
+    if (count && !confirm(`Delete "${board.name}" and its ${count} ticket${count > 1 ? 's' : ''}?`)) return;
+    const name = board.name;
+    data.boards = data.boards.filter(b => b !== board);
+    selectBoard(data.boards[0].id);
+    saveBoard();
+    closeModal('boardModal');
+    notify(`Board deleted: ${name}`);
 }
 
 // Board rendering
@@ -382,6 +457,7 @@ function addCommentFromInput() {
 
 function getBoardState() {
     return {
+        board: { id: board.id, name: board.name },
         columns: COLUMNS.map(c => c.id),
         tasks: board.tasks.map(t => ({ ...t, blocked: isBlocked(t) }))
     };
@@ -404,7 +480,14 @@ function copyBoardJson() {
     notify('Board copied as JSON');
 }
 
+function listBoards() {
+    return data.boards.map(b => ({ id: b.id, name: b.name, tasks: b.tasks.length }));
+}
+
 window.ScrumAI = {
+    listBoards,
+    selectBoard,
+    addBoard,
     getBoardState,
     addTask,
     moveTask,

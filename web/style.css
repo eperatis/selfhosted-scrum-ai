@@ -238,6 +238,15 @@ body {
     width: 280px;
 }
 
+.board-picker {
+    display: flex;
+    gap: 12px;
+}
+
+.board-picker select {
+    width: 200px;
+}
+
 /* Board */
 
 .board {
@@ -620,6 +629,16 @@ body {
     }
 
     .search {
+        flex: 1;
+        width: auto;
+        min-width: 0;
+    }
+
+    .board-picker {
+        width: 100%;
+    }
+
+    .board-picker select {
         flex: 1;
         width: auto;
         min-width: 0;
