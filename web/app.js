@@ -42,6 +42,7 @@ let modalBlockers = [];
 
 document.addEventListener('DOMContentLoaded', () => {
     applyTheme(localStorage.getItem(THEME_KEY) || 'light');
+    showLLMAddress();
     renderColumns();
     renderNotifications();
 
@@ -165,7 +166,6 @@ function addBoard(name) {
     data.boards.push(newBoard);
     selectBoard(newBoard.id);
     saveBoard();
-    return newBoard;
 }
 
 function openBoardModal(isNew) {
@@ -453,7 +453,7 @@ function addCommentFromInput() {
     renderComments(findTask(taskId));
 }
 
-// Export / external API for the local LLM
+// Export
 
 function getBoardState() {
     return {
@@ -480,19 +480,16 @@ function copyBoardJson() {
     notify('Board copied as JSON');
 }
 
-function listBoards() {
-    return data.boards.map(b => ({ id: b.id, name: b.name, tasks: b.tasks.length }));
+// LLM API runs on its own port, so the address shown is this host with that port
+async function showLLMAddress() {
+    const el = document.getElementById('llmAddress');
+    try {
+        const port = await (await fetch('/api/llm-port')).json();
+        el.innerText = port ? `${location.protocol}//${location.hostname}:${port}` : 'off: start the server with -llm to turn it on';
+    } catch {
+        el.innerText = 'unknown';
+    }
 }
-
-window.ScrumAI = {
-    listBoards,
-    selectBoard,
-    addBoard,
-    getBoardState,
-    addTask,
-    moveTask,
-    addComment
-};
 
 // Theme
 

@@ -528,13 +528,31 @@ body {
     color: var(--color-text-muted);
 }
 
-.code {
-    margin: 0 0 10px;
-    padding: 10px;
+/* Keep code names in headings as written */
+.label code {
+    text-transform: none;
+}
+
+.api-list {
+    margin: 0;
     font-size: 13px;
-    background: var(--color-surface);
-    border: var(--border);
-    border-radius: 5px;
+}
+
+.api-list dt {
+    margin-top: 10px;
+    font-family: monospace;
+    font-weight: bold;
+    overflow-wrap: anywhere;
+}
+
+.api-list dt:first-child {
+    margin-top: 0;
+}
+
+.api-list dd {
+    margin: 2px 0 0;
+    color: var(--color-text-muted);
+    overflow-wrap: anywhere;
 }
 
 /* Notifications */

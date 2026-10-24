@@ -148,29 +148,21 @@
         </div>
     </div>
 
-    <!-- Script / LLM API info -->
+    <!-- LLM API info -->
     <div id="apiModal" class="modal hidden">
         <div class="modal-box">
             <div class="modal-header">
-                <h3>Script / LLM API</h3>
+                <h3>LLM API</h3>
                 <button onclick="closeModal('apiModal')" class="icon-btn">&times;</button>
             </div>
             <div class="modal-body">
-                <div>
-                    <p>HTTP API:</p>
-                    <pre class="code">GET /api/board</pre>
-                    <pre class="code">PUT /api/board   (body: all boards, { boards: [{ id, name, tasks }] })</pre>
-                </div>
-                <div>
-                    <p>Available on <code>window.ScrumAI</code>:</p>
-                    <pre class="code">ScrumAI.listBoards()</pre>
-                    <pre class="code">ScrumAI.selectBoard(boardId)</pre>
-                    <pre class="code">ScrumAI.addBoard(name)</pre>
-                    <pre class="code">ScrumAI.getBoardState()   (the board on screen)</pre>
-                    <pre class="code">ScrumAI.addTask({ title, desc, column, dueDate, blockedBy })</pre>
-                    <pre class="code">ScrumAI.moveTask(taskId, column)</pre>
-                    <pre class="code">ScrumAI.addComment(taskId, text)</pre>
-                </div>
+                <p>Read-only HTTP endpoints at <code id="llmAddress"></code>. This port can't change or delete anything; the board itself runs on a different port.</p>
+                <dl class="api-list">
+                    <dt>GET /api/boards</dt>
+                    <dd>Every board's id, name, ticket count per column and number of blocked tickets</dd>
+                    <dt>GET /api/boards/{id}</dt>
+                    <dd>One board's tickets, with comments and a <code>blocked</code> flag</dd>
+                </dl>
             </div>
         </div>
     </div>

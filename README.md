@@ -56,6 +56,8 @@ If the page doesn't load and the server runs Fedora or RHEL, open the port in th
 sudo firewall-cmd --add-port=8080/tcp --permanent && sudo firewall-cmd --reload
 ```
 
+If the LLM runs on another machine, open its port too: `--add-port=8081/tcp`.
+
 ## 5. Start on boot (optional)
 
 Edit `scrum-board.service` and replace `you` with your username on the server. Then:
@@ -78,7 +80,27 @@ journalctl -u scrum-board -f          # view logs
 |---|---|---|
 | `-lan` | off | allow other devices on the network to connect |
 | `-port` | `8080` | port to listen on |
+| `-llm` | off | start the read-only LLM API on its own port |
+| `-llm-port` | `8081` | port for the LLM API |
 | `-data` | `board.json` | path to the board data file |
+
+## LLM API
+
+A local LLM or script can read the boards over HTTP on a separate port. It's off by default; start the server with `-llm` to turn it on:
+
+```bash
+./scrum-board -llm          # LLM API on port 8081
+./scrum-board -lan -llm     # both together
+```
+
+That port only has these two read-only endpoints, so give the LLM this address and not the board's `8080`:
+
+```bash
+curl http://localhost:8081/api/boards              # every board with ticket counts per column
+curl http://localhost:8081/api/boards/board-main   # one board's tickets, comments and blocked flags
+```
+
+Like the board, it's only reachable from the same machine unless you start with `-lan`.
 
 ## Updating
 
