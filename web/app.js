@@ -132,7 +132,7 @@ function isOverdue(dueDate) {
 
 function escapeHtml(text) {
     if (!text) return '';
-    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // Boards
@@ -151,7 +151,7 @@ function selectBoard(boardId) {
 function renderBoardSelect() {
     const boardSelect = document.getElementById('boardSelect');
     boardSelect.innerHTML = boardFileData.boards
-        .map(board => `<option value="${board.id}">${escapeHtml(board.name)}</option>`)
+        .map(board => `<option value="${escapeHtml(board.id)}">${escapeHtml(board.name)}</option>`)
         .join('');
     boardSelect.value = currentBoard.id;
 }
@@ -265,15 +265,21 @@ function createCard(task) {
 
         <div class="card-footer">
             <div class="card-meta">
-                ${task.dueDate ? `<span class="${isOverdueAndNotDone ? 'overdue' : ''}">Due ${task.dueDate.slice(5)}</span>` : ''}
+                ${task.dueDate ? `<span class="${isOverdueAndNotDone ? 'overdue' : ''}">Due ${escapeHtml(task.dueDate.slice(5))}</span>` : ''}
                 ${task.comments.length ? `<span>${task.comments.length} comment${task.comments.length > 1 ? 's' : ''}</span>` : ''}
             </div>
             <div class="card-moves">
-                ${previousColumn ? `<button onclick="event.stopPropagation(); moveTask('${task.id}', '${previousColumn.id}')" class="btn btn-secondary btn-sm" title="Move to ${previousColumn.name}">&larr;</button>` : ''}
-                ${nextColumn ? `<button onclick="event.stopPropagation(); moveTask('${task.id}', '${nextColumn.id}')" class="btn btn-secondary btn-sm" title="Move to ${nextColumn.name}">&rarr;</button>` : ''}
+                ${previousColumn ? `<button data-move-to-column="${previousColumn.id}" class="btn btn-secondary btn-sm" title="Move to ${previousColumn.name}">&larr;</button>` : ''}
+                ${nextColumn ? `<button data-move-to-column="${nextColumn.id}" class="btn btn-secondary btn-sm" title="Move to ${nextColumn.name}">&rarr;</button>` : ''}
             </div>
         </div>
     `;
+    card.querySelectorAll('[data-move-to-column]').forEach(moveButton => {
+        moveButton.addEventListener('click', event => {
+            event.stopPropagation();
+            moveTask(task.id, moveButton.dataset.moveToColumn);
+        });
+    });
 
     return card;
 }
@@ -393,17 +399,20 @@ function renderBlockers() {
         return `
             <li class="list-item">
                 <span class="${blockerTask.column === 'done' ? 'done-text' : ''}">${escapeHtml(blockerTask.title)}</span>
-                <button type="button" onclick="removeBlockerFromTaskModal('${blockerId}')" class="icon-btn">
+                <button type="button" data-remove-blocker-id="${escapeHtml(blockerId)}" class="icon-btn">
                     &times;
                 </button>
             </li>
         `;
     }).join('');
+    document.querySelectorAll('[data-remove-blocker-id]').forEach(removeButton => {
+        removeButton.addEventListener('click', () => removeBlockerFromTaskModal(removeButton.dataset.removeBlockerId));
+    });
 
     const selectableBlockerTasks = currentBoard.tasks.filter(task => task.id !== editedTaskId && !blockerIdsInTaskModal.includes(task.id));
     document.getElementById('blockerSelect').innerHTML =
         '<option value="">+ Add blocking ticket...</option>' +
-        selectableBlockerTasks.map(task => `<option value="${task.id}">${escapeHtml(task.title)}</option>`).join('');
+        selectableBlockerTasks.map(task => `<option value="${escapeHtml(task.id)}">${escapeHtml(task.title)}</option>`).join('');
 }
 
 function addBlockerToTaskModal(blockerId) {

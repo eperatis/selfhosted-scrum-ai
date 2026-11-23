@@ -2,6 +2,22 @@
 
 A single-user, self-hosted Scrum board. One Go binary serves the web UI and stores all data in `board.json`.
 
+## Intended use
+
+This project is meant for **one person on one computer**. It has no login, no user accounts and no encryption, on purpose:
+
+- By default it only accepts connections from the same computer.
+- `-lan` opens it to the local network. Only use that on a network you trust, such as your own home Wi-Fi. Anyone on that network can read, change or delete every board.
+- Traffic is plain HTTP, so don't use `-lan` on public or shared Wi-Fi.
+
+**No warranty.** The software is provided as is. The author is not responsible for data loss or any other damage, including when it is used by other people, on other machines, or in ways other than described here. Keep your own backups of `board.json` (see [Backup](#backup)).
+
+What it does protect against:
+
+- **Other websites in your browser:** the server only answers requests addressed to `localhost`, an IP address or the computer's own name, so a malicious website can't reach the board through DNS rebinding. The LLM API only accepts `Content-Type: application/json`, so websites can't create tickets through your browser either.
+- **Broken or crafted board data:** every save is checked (ids, columns, dates) before it's written.
+- **Other users on the same computer:** `board.json` is only readable by the user running the server.
+
 ## 1. Install Go on your PC (once)
 
 ```bash
@@ -48,7 +64,7 @@ cd ~/scrum-board
 
 Open `http://server-ip:8080`.
 
-> **Note:** By default the app is only reachable from the same machine, which keeps it private on a laptop on public wifi. `-lan` makes it reachable from the whole network. There is no login, so only use `-lan` on a network you trust.
+> **Note:** By default the app is only reachable from the same machine. `-lan` makes it reachable from the whole network, with no login, so only use it on a trusted network (see [Intended use](#intended-use)). Open it by IP address or the machine's name; other domain names pointing at it are refused.
 
 If the page doesn't load and the server runs Fedora or RHEL, open the port in the firewall:
 
@@ -100,14 +116,14 @@ curl http://localhost:8081/api/boards              # every board with ticket cou
 curl http://localhost:8081/api/boards/board-main   # one board's tickets, comments and blocked flags
 
 # create a board; the reply holds its new id
-curl -X POST http://localhost:8081/api/boards -d '{"name": "Sprint 12"}'
+curl -X POST http://localhost:8081/api/boards -H 'Content-Type: application/json' -d '{"name": "Sprint 12"}'
 
 # create a ticket; only title is required, column defaults to backlog
-curl -X POST http://localhost:8081/api/boards/board-main/tickets \
+curl -X POST http://localhost:8081/api/boards/board-main/tickets -H 'Content-Type: application/json' \
   -d '{"title": "Fix login", "desc": "...", "column": "todo", "dueDate": "2026-11-15", "blockedBy": ["task-abc"]}'
 ```
 
-`column` is one of `backlog`, `todo`, `inprogress`, `review`, `done`, and `blockedBy` lists ticket ids from the same board. A bad request gets a `400` with a message saying what to fix.
+`column` is one of `backlog`, `todo`, `inprogress`, `review`, `done`, and `blockedBy` lists ticket ids from the same board. A bad request gets a `400` with a message saying what to fix. `POST` requests must send `Content-Type: application/json`, otherwise they get a `415`.
 
 An open board tab picks up new boards and tickets within a few seconds. If you save a change at the same moment the LLM creates something, your change isn't saved and the board reloads, so nothing the LLM added gets overwritten; just redo it.
 

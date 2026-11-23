@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"embed"
 	"encoding/json"
@@ -10,8 +11,11 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"mime"
+	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -62,16 +66,47 @@ func main() {
 		listenHost, accessDescription = "", "whole network"
 	}
 
+	machineHostname, err := os.Hostname()
+	if err != nil {
+		log.Fatal(err)
+	}
+	allowedHostnames := []string{"localhost", strings.ToLower(machineHostname), strings.ToLower(machineHostname) + ".local"}
+
 	log.Printf("data in %s", *boardFilePath)
 	if *enableLLMAPI {
-		go listenAndServe("LLM API", listenHost, *llmAPIPort, accessDescription, llmAPIRouter)
+		go listenAndServe("LLM API", listenHost, *llmAPIPort, accessDescription, rejectUnknownHosts(allowedHostnames, llmAPIRouter))
 	}
-	listenAndServe("board", listenHost, *boardPort, accessDescription, boardRouter)
+	listenAndServe("board", listenHost, *boardPort, accessDescription, rejectUnknownHosts(allowedHostnames, boardRouter))
 }
 
 func listenAndServe(serverName, listenHost string, listenPort int, accessDescription string, handler http.Handler) {
 	log.Printf("%s listening on port %d (%s)", serverName, listenPort, accessDescription)
-	log.Fatal(http.ListenAndServe(fmt.Sprintf("%s:%d", listenHost, listenPort), handler))
+	server := &http.Server{
+		Addr:              fmt.Sprintf("%s:%d", listenHost, listenPort),
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+	log.Fatal(server.ListenAndServe())
+}
+
+// Blocks DNS rebinding: a malicious website can point its own domain at this machine, but the browser
+// still sends that domain as the Host, so only IP addresses and this machine's own names are let through
+func rejectUnknownHosts(allowedHostnames []string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		requestHostname := request.Host
+		if hostnameWithoutPort, _, err := net.SplitHostPort(request.Host); err == nil {
+			requestHostname = hostnameWithoutPort
+		}
+		requestHostname = strings.ToLower(strings.Trim(requestHostname, "[]"))
+		if net.ParseIP(requestHostname) == nil && !slices.Contains(allowedHostnames, requestHostname) {
+			http.Error(responseWriter, "unknown host "+request.Host+": use localhost, an IP address or this machine's name", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(responseWriter, request)
+	})
 }
 
 // 0 when the LLM API is off
@@ -111,8 +146,15 @@ func handlePutBoardFile(responseWriter http.ResponseWriter, request *http.Reques
 		http.Error(responseWriter, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if !json.Valid(uploadedBoardFile) {
-		http.Error(responseWriter, "invalid JSON", http.StatusBadRequest)
+	var parsedBoardFile BoardFile
+	decoder := json.NewDecoder(bytes.NewReader(uploadedBoardFile))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&parsedBoardFile); err != nil {
+		http.Error(responseWriter, "invalid board file: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := validateBoardFile(parsedBoardFile); err != nil {
+		http.Error(responseWriter, "invalid board file: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -149,7 +191,7 @@ func computeETag(boardFileContents []byte) string {
 // Write to a temp file and rename, so a crash mid-write can't corrupt the board. Call with boardFileMutex held.
 func writeBoardFileAtomically(boardFileContents []byte) error {
 	temporaryFilePath := *boardFilePath + ".tmp"
-	if err := os.WriteFile(temporaryFilePath, boardFileContents, 0o644); err != nil {
+	if err := os.WriteFile(temporaryFilePath, boardFileContents, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(temporaryFilePath, *boardFilePath)
@@ -186,6 +228,51 @@ type BoardFile struct {
 
 // Same order as COLUMNS in web/app.js
 var columnIDs = []string{"backlog", "todo", "inprogress", "review", "done"}
+
+// Same format as newId() in web/app.js. IDs end up inside HTML attributes, so nothing else is allowed.
+var validIDPattern = regexp.MustCompile(`^[a-z]+-[a-z0-9]+$`)
+
+// Checks every field the frontend puts into the page without escaping, so a crafted PUT can't inject HTML
+func validateBoardFile(boardFile BoardFile) error {
+	if len(boardFile.Boards) == 0 {
+		return errors.New("needs at least one board")
+	}
+	for _, board := range boardFile.Boards {
+		if !validIDPattern.MatchString(board.ID) {
+			return fmt.Errorf("board id %q must look like board-abc123", board.ID)
+		}
+		for _, task := range board.Tasks {
+			if !validIDPattern.MatchString(task.ID) {
+				return fmt.Errorf("task id %q must look like task-abc123", task.ID)
+			}
+			if !slices.Contains(columnIDs, task.Column) {
+				return fmt.Errorf("task %s: column must be one of: %s", task.ID, strings.Join(columnIDs, ", "))
+			}
+			if task.DueDate != "" {
+				if _, err := time.Parse(time.DateOnly, task.DueDate); err != nil {
+					return fmt.Errorf("task %s: dueDate must look like 2026-10-31", task.ID)
+				}
+			}
+			if _, err := time.Parse(time.DateOnly, task.CreatedAt); err != nil {
+				return fmt.Errorf("task %s: createdAt must look like 2026-10-31", task.ID)
+			}
+			for _, blockerTaskID := range task.BlockedBy {
+				if !validIDPattern.MatchString(blockerTaskID) {
+					return fmt.Errorf("task %s: blockedBy id %q must look like task-abc123", task.ID, blockerTaskID)
+				}
+			}
+			for _, comment := range task.Comments {
+				if !validIDPattern.MatchString(comment.ID) {
+					return fmt.Errorf("task %s: comment id %q must look like comment-abc123", task.ID, comment.ID)
+				}
+				if _, err := time.Parse(time.RFC3339Nano, comment.CreatedAt); err != nil {
+					return fmt.Errorf("task %s: comment createdAt must be an ISO 8601 timestamp", task.ID)
+				}
+			}
+		}
+	}
+	return nil
+}
 
 // Blocked if any blocker still exists and isn't done, like isTaskBlocked() in web/app.js
 func isTaskBlocked(board Board, task Task) bool {
@@ -331,7 +418,13 @@ type notFoundError string
 
 func (err notFoundError) Error() string { return string(err) }
 
+// Requiring application/json forces browsers to send a CORS preflight, which this server never approves,
+// so other websites can't create boards or tickets through the visitor's browser
 func decodeJSONRequestBody(responseWriter http.ResponseWriter, request *http.Request, destination any) bool {
+	if mediaType, _, _ := mime.ParseMediaType(request.Header.Get("Content-Type")); mediaType != "application/json" {
+		http.Error(responseWriter, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+		return false
+	}
 	if err := json.NewDecoder(http.MaxBytesReader(responseWriter, request.Body, maxLLMRequestBodyBytes)).Decode(destination); err != nil {
 		http.Error(responseWriter, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return false
