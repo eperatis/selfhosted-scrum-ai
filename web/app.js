@@ -1,6 +1,6 @@
-const OLD_BOARD_KEY = 'scrum_ai_board_v1';
-const NOTIFICATIONS_KEY = 'scrum_ai_notifications_v1';
-const THEME_KEY = 'scrum_ai_theme';
+const NOTIFICATIONS_STORAGE_KEY = 'scrum_ai_notifications_v1';
+const THEME_STORAGE_KEY = 'scrum_ai_theme';
+const BOARD_REFRESH_INTERVAL_MS = 5000;
 
 const COLUMNS = [
     { id: 'backlog', name: 'Backlog', color: 'var(--color-status-backlog)' },
@@ -10,101 +10,96 @@ const COLUMNS = [
     { id: 'done', name: 'Done', color: 'var(--color-status-done)' }
 ];
 
-const defaultBoard = {
-    tasks: [
-        {
-            id: 'task-101',
-            title: 'Set up JWT Token Refresh Strategy',
-            desc: 'Handle access token expiration and silently refresh tokens in client background.',
-            column: 'inprogress',
-            dueDate: '2026-10-25',
-            blockedBy: [],
-            comments: []
-        },
-        {
-            id: 'task-102',
-            title: 'Create Automated E2E Tests for Auth Flow',
-            desc: 'Write Playwright test cases covering user login, token refresh, and logout.',
-            column: 'backlog',
-            dueDate: '2026-10-30',
-            blockedBy: ['task-101'],
-            comments: []
-        }
-    ]
-};
-
-// All boards; `board` is the one currently shown
-let data = { boards: [] };
-let board = { tasks: [] };
-let notifications = JSON.parse(localStorage.getItem(NOTIFICATIONS_KEY)) || [];
+let boardFileData = { boards: [] };
+let currentBoard = { tasks: [] };
+let notifications = JSON.parse(localStorage.getItem(NOTIFICATIONS_STORAGE_KEY)) || [];
 let draggedTaskId = null;
-let modalBlockers = [];
+let blockerIdsInTaskModal = [];
+// Version of board.json this tab last loaded or saved, so the server can refuse a save over newer changes
+let boardFileETag = null;
+// Server calls run one at a time, so a save always sends the ETag the previous one got back
+let serverRequestQueue = Promise.resolve();
 
 document.addEventListener('DOMContentLoaded', () => {
-    applyTheme(localStorage.getItem(THEME_KEY) || 'light');
-    showLLMAddress();
+    applyTheme(localStorage.getItem(THEME_STORAGE_KEY) || 'light');
+    showLLMAPIAddress();
     renderColumns();
     renderNotifications();
 
-    // Close the notification panel on any click outside of it
-    document.addEventListener('pointerdown', e => {
-        if (!e.target.closest('.notifications')) closeNotifications();
+    document.addEventListener('pointerdown', event => {
+        if (!event.target.closest('.notifications')) closeNotifications();
     });
 
     // The URL hash holds the board id, so each tab can show a different board
     window.addEventListener('hashchange', () => selectBoard(location.hash.slice(1)));
 
-    loadBoard()
+    loadBoardsFromServer()
         .then(() => selectBoard(location.hash.slice(1)))
-        .catch(() => notify('Loading failed: could not reach the server'));
+        .catch(error => notify(`Loading failed: ${error.message}`));
+
+    // Pick up boards and tickets the LLM API (or another tab) created, but not while the user is mid-edit
+    setInterval(() => {
+        const isUserEditing = draggedTaskId || document.querySelector('.modal:not(.hidden)');
+        if (!document.hidden && !isUserEditing) reloadBoardsIfChangedOnServer();
+    }, BOARD_REFRESH_INTERVAL_MS);
 });
 
 // Storage
 
-async function loadBoard() {
-    const res = await fetch('/api/board');
-    const isFirstRun = res.status === 204;
+async function loadBoardsFromServer() {
+    const response = await fetch('/api/board');
+    if (!response.ok) throw new Error(`server answered ${response.status} ${await response.text()}`);
+    boardFileETag = response.headers.get('ETag');
 
-    // First run: the server has no board yet, so upload the old localStorage board (or the demo board)
-    const saved = isFirstRun
-        ? JSON.parse(localStorage.getItem(OLD_BOARD_KEY)) || defaultBoard
-        : await res.json();
-
-    // Files from before multiple boards hold a single { tasks } board
-    const isOldFormat = !saved.boards;
-    const boards = isOldFormat ? [{ id: 'board-main', name: 'My Board', tasks: saved.tasks }] : saved.boards;
-
-    data = { boards: boards.map(b => ({ id: b.id, name: b.name, tasks: b.tasks.map(normalizeTask) })) };
-    board = data.boards[0];
-    if (isFirstRun || isOldFormat) saveBoard();
+    // First run: the server has no board.json yet
+    const isFirstRun = response.status === 204;
+    boardFileData = isFirstRun
+        ? { boards: [{ id: 'board-main', name: 'My Board', tasks: [] }] }
+        : await response.json();
+    currentBoard = boardFileData.boards[0];
+    if (isFirstRun) saveBoardsAndRender();
 }
 
-// Drops fields from older versions (priority, points, tag) and fills in new ones
-function normalizeTask(t) {
-    return {
-        id: t.id,
-        title: t.title,
-        desc: t.desc || '',
-        column: t.column,
-        dueDate: t.dueDate || '',
-        createdAt: t.createdAt || t.assignedDate || today(),
-        blockedBy: t.blockedBy || [],
-        comments: t.comments || []
-    };
+function saveBoardsAndRender() {
+    renderCurrentBoard();
+    serverRequestQueue = serverRequestQueue.then(putBoardsToServer);
 }
 
-async function saveBoard() {
-    renderBoard();
+async function putBoardsToServer() {
+    const headers = { 'Content-Type': 'application/json' };
+    if (boardFileETag) headers['If-Match'] = boardFileETag;
     try {
-        const res = await fetch('/api/board', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data, null, 2)
-        });
-        if (!res.ok) throw new Error(res.status);
-    } catch {
-        notify('Saving failed: could not reach the server');
+        const response = await fetch('/api/board', { method: 'PUT', headers, body: JSON.stringify(boardFileData, null, 2) });
+        // board.json changed since this tab loaded it: saving would delete those changes
+        if (response.status === 412) {
+            await reloadBoardsKeepingSelection();
+            notify('Your last change was not saved: the board was changed by the LLM API or another tab, so it was reloaded');
+            return;
+        }
+        if (!response.ok) throw new Error(`server answered ${response.status} ${await response.text()}`);
+        boardFileETag = response.headers.get('ETag');
+    } catch (error) {
+        notify(`Saving failed: ${error.message}`);
     }
+}
+
+function reloadBoardsIfChangedOnServer() {
+    serverRequestQueue = serverRequestQueue.then(async () => {
+        try {
+            const response = await fetch('/api/board', { method: 'HEAD' });
+            if (!response.ok) throw new Error(`server answered ${response.status}`);
+            if (response.headers.get('ETag') !== boardFileETag) await reloadBoardsKeepingSelection();
+        } catch (error) {
+            // Runs every few seconds, so log instead of filling the notification list
+            console.error(`Board refresh failed, retrying in ${BOARD_REFRESH_INTERVAL_MS / 1000}s:`, error);
+        }
+    });
+}
+
+async function reloadBoardsKeepingSelection() {
+    const selectedBoardId = currentBoard.id;
+    await loadBoardsFromServer();
+    selectBoard(selectedBoardId);
 }
 
 // Helpers
@@ -117,123 +112,123 @@ function today() {
     return new Date().toISOString().split('T')[0];
 }
 
-function findTask(id) {
-    return board.tasks.find(t => t.id === id);
+function findTask(taskId) {
+    return currentBoard.tasks.find(task => task.id === taskId);
 }
 
-function isBlocked(task) {
-    return task.blockedBy.some(id => {
-        const blocker = findTask(id);
-        return blocker && blocker.column !== 'done';
+function isTaskBlocked(task) {
+    return task.blockedBy.some(blockerId => {
+        const blockerTask = findTask(blockerId);
+        return blockerTask && blockerTask.column !== 'done';
     });
 }
 
 function isOverdue(dueDate) {
     if (!dueDate) return false;
-    const now = new Date();
-    now.setHours(0, 0, 0, 0);
-    return new Date(dueDate) < now;
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    return new Date(dueDate) < startOfToday;
 }
 
-function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function escapeHtml(text) {
+    if (!text) return '';
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 // Boards
 
-function findBoard(id) {
-    return data.boards.find(b => b.id === id);
+function findBoard(boardId) {
+    return boardFileData.boards.find(board => board.id === boardId);
 }
 
-function selectBoard(id) {
-    board = findBoard(id) || data.boards[0];
-    if (location.hash.slice(1) !== board.id) history.replaceState(null, '', `#${board.id}`);
+function selectBoard(boardId) {
+    currentBoard = findBoard(boardId) || boardFileData.boards[0];
+    if (location.hash.slice(1) !== currentBoard.id) history.replaceState(null, '', `#${currentBoard.id}`);
     renderBoardSelect();
-    renderBoard();
+    renderCurrentBoard();
 }
 
 function renderBoardSelect() {
-    const select = document.getElementById('boardSelect');
-    select.innerHTML = data.boards
-        .map(b => `<option value="${b.id}">${escapeHtml(b.name)}</option>`)
+    const boardSelect = document.getElementById('boardSelect');
+    boardSelect.innerHTML = boardFileData.boards
+        .map(board => `<option value="${board.id}">${escapeHtml(board.name)}</option>`)
         .join('');
-    select.value = board.id;
+    boardSelect.value = currentBoard.id;
 }
 
-function addBoard(name) {
-    const newBoard = { id: newId('board'), name, tasks: [] };
-    data.boards.push(newBoard);
+function addBoard(boardName) {
+    const newBoard = { id: newId('board'), name: boardName, tasks: [] };
+    boardFileData.boards.push(newBoard);
     selectBoard(newBoard.id);
-    saveBoard();
+    saveBoardsAndRender();
 }
 
-function openBoardModal(isNew) {
-    document.getElementById('modalBoardTitle').innerText = isNew ? 'New Board' : 'Edit Board';
-    document.getElementById('boardIsNew').value = isNew ? '1' : '';
-    document.getElementById('boardName').value = isNew ? '' : board.name;
-    // The last board can't be deleted
-    document.getElementById('btnDeleteBoard').classList.toggle('hidden', isNew || data.boards.length < 2);
+function openBoardModal(isNewBoard) {
+    document.getElementById('modalBoardTitle').innerText = isNewBoard ? 'New Board' : 'Edit Board';
+    document.getElementById('boardIsNew').value = isNewBoard ? '1' : '';
+    document.getElementById('boardName').value = isNewBoard ? '' : currentBoard.name;
+    const isLastBoard = boardFileData.boards.length < 2;
+    document.getElementById('btnDeleteBoard').classList.toggle('hidden', isNewBoard || isLastBoard);
     openModal('boardModal');
     document.getElementById('boardName').focus();
 }
 
-function saveBoardForm(e) {
-    e.preventDefault();
-    const name = document.getElementById('boardName').value.trim();
+function saveBoardForm(event) {
+    event.preventDefault();
+    const boardName = document.getElementById('boardName').value.trim();
     if (document.getElementById('boardIsNew').value) {
-        addBoard(name);
-        notify(`Board created: ${name}`);
+        addBoard(boardName);
+        notify(`Board created: ${boardName}`);
     } else {
-        board.name = name;
+        currentBoard.name = boardName;
         renderBoardSelect();
-        saveBoard();
-        notify(`Board renamed: ${name}`);
+        saveBoardsAndRender();
+        notify(`Board renamed: ${boardName}`);
     }
     closeModal('boardModal');
 }
 
 function deleteCurrentBoard() {
-    const count = board.tasks.length;
-    if (count && !confirm(`Delete "${board.name}" and its ${count} ticket${count > 1 ? 's' : ''}?`)) return;
-    const name = board.name;
-    data.boards = data.boards.filter(b => b !== board);
-    selectBoard(data.boards[0].id);
-    saveBoard();
+    const ticketCount = currentBoard.tasks.length;
+    if (ticketCount && !confirm(`Delete "${currentBoard.name}" and its ${ticketCount} ticket${ticketCount > 1 ? 's' : ''}?`)) return;
+    const deletedBoardName = currentBoard.name;
+    boardFileData.boards = boardFileData.boards.filter(board => board !== currentBoard);
+    selectBoard(boardFileData.boards[0].id);
+    saveBoardsAndRender();
     closeModal('boardModal');
-    notify(`Board deleted: ${name}`);
+    notify(`Board deleted: ${deletedBoardName}`);
 }
 
 // Board rendering
 
 function renderColumns() {
-    document.getElementById('board').innerHTML = COLUMNS.map(col => `
+    document.getElementById('board').innerHTML = COLUMNS.map(column => `
         <div class="column">
             <div class="column-header">
-                <h2><span class="dot" style="background: ${col.color}"></span>${col.name}</h2>
-                <span id="count-${col.id}" class="count">0</span>
+                <h2><span class="dot" style="background: ${column.color}"></span>${column.name}</h2>
+                <span id="count-${column.id}" class="count">0</span>
             </div>
-            <div id="col-${col.id}" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event, '${col.id}')" class="column-body"></div>
+            <div id="col-${column.id}" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event, '${column.id}')" class="column-body"></div>
         </div>
     `).join('');
 
     document.getElementById('taskColumn').innerHTML = COLUMNS
-        .map(col => `<option value="${col.id}">${col.name}</option>`)
+        .map(column => `<option value="${column.id}">${column.name}</option>`)
         .join('');
 }
 
-function renderBoard() {
-    const search = document.getElementById('searchInput').value.toLowerCase().trim();
-    const matches = task => !search
-        || task.title.toLowerCase().includes(search)
-        || task.desc.toLowerCase().includes(search);
+function renderCurrentBoard() {
+    const searchText = document.getElementById('searchInput').value.toLowerCase().trim();
+    const matchesSearch = task => !searchText
+        || task.title.toLowerCase().includes(searchText)
+        || task.desc.toLowerCase().includes(searchText);
 
-    COLUMNS.forEach(col => {
-        const tasks = board.tasks.filter(t => t.column === col.id && matches(t));
-        const container = document.getElementById(`col-${col.id}`);
-        container.innerHTML = '';
-        tasks.forEach(task => container.appendChild(createCard(task)));
-        document.getElementById(`count-${col.id}`).innerText = tasks.length;
+    COLUMNS.forEach(column => {
+        const columnTasks = currentBoard.tasks.filter(task => task.column === column.id && matchesSearch(task));
+        const columnBody = document.getElementById(`col-${column.id}`);
+        columnBody.innerHTML = '';
+        columnTasks.forEach(task => columnBody.appendChild(createCard(task)));
+        document.getElementById(`count-${column.id}`).innerText = columnTasks.length;
     });
 }
 
@@ -242,10 +237,10 @@ function createCard(task) {
     card.className = 'card';
     card.draggable = true;
 
-    card.addEventListener('dragstart', e => {
+    card.addEventListener('dragstart', event => {
         draggedTaskId = task.id;
         card.classList.add('dragging');
-        e.dataTransfer.setData('text/plain', task.id);
+        event.dataTransfer.setData('text/plain', task.id);
     });
     card.addEventListener('dragend', () => {
         card.classList.remove('dragging');
@@ -253,14 +248,14 @@ function createCard(task) {
     });
     card.addEventListener('click', () => openTaskModal(task.id));
 
-    const colIndex = COLUMNS.findIndex(c => c.id === task.column);
-    const prevCol = COLUMNS[colIndex - 1];
-    const nextCol = COLUMNS[colIndex + 1];
-    const overdue = isOverdue(task.dueDate) && task.column !== 'done';
-    const blockerTitles = task.blockedBy.map(id => findTask(id)?.title).filter(Boolean).join(', ');
+    const columnIndex = COLUMNS.findIndex(column => column.id === task.column);
+    const previousColumn = COLUMNS[columnIndex - 1];
+    const nextColumn = COLUMNS[columnIndex + 1];
+    const isOverdueAndNotDone = isOverdue(task.dueDate) && task.column !== 'done';
+    const blockerTitles = task.blockedBy.map(blockerId => findTask(blockerId)?.title).filter(Boolean).join(', ');
 
     card.innerHTML = `
-        ${isBlocked(task) ? `
+        ${isTaskBlocked(task) ? `
             <span class="badge-blocked" title="Blocked by: ${escapeHtml(blockerTitles)}">
                 Blocked
             </span>` : ''}
@@ -270,12 +265,12 @@ function createCard(task) {
 
         <div class="card-footer">
             <div class="card-meta">
-                ${task.dueDate ? `<span class="${overdue ? 'overdue' : ''}">Due ${task.dueDate.slice(5)}</span>` : ''}
+                ${task.dueDate ? `<span class="${isOverdueAndNotDone ? 'overdue' : ''}">Due ${task.dueDate.slice(5)}</span>` : ''}
                 ${task.comments.length ? `<span>${task.comments.length} comment${task.comments.length > 1 ? 's' : ''}</span>` : ''}
             </div>
             <div class="card-moves">
-                ${prevCol ? `<button onclick="event.stopPropagation(); moveTask('${task.id}', '${prevCol.id}')" class="btn btn-secondary btn-sm" title="Move to ${prevCol.name}">&larr;</button>` : ''}
-                ${nextCol ? `<button onclick="event.stopPropagation(); moveTask('${task.id}', '${nextCol.id}')" class="btn btn-secondary btn-sm" title="Move to ${nextCol.name}">&rarr;</button>` : ''}
+                ${previousColumn ? `<button onclick="event.stopPropagation(); moveTask('${task.id}', '${previousColumn.id}')" class="btn btn-secondary btn-sm" title="Move to ${previousColumn.name}">&larr;</button>` : ''}
+                ${nextColumn ? `<button onclick="event.stopPropagation(); moveTask('${task.id}', '${nextColumn.id}')" class="btn btn-secondary btn-sm" title="Move to ${nextColumn.name}">&rarr;</button>` : ''}
             </div>
         </div>
     `;
@@ -285,56 +280,49 @@ function createCard(task) {
 
 // Drag & drop
 
-function handleDragOver(e) {
-    e.preventDefault();
-    e.currentTarget.classList.add('drag-over');
+function handleDragOver(event) {
+    event.preventDefault();
+    event.currentTarget.classList.add('drag-over');
 }
 
-function handleDragLeave(e) {
-    e.currentTarget.classList.remove('drag-over');
+function handleDragLeave(event) {
+    event.currentTarget.classList.remove('drag-over');
 }
 
-function handleDrop(e, column) {
-    e.preventDefault();
-    e.currentTarget.classList.remove('drag-over');
-    const taskId = e.dataTransfer.getData('text/plain') || draggedTaskId;
-    if (taskId) moveTask(taskId, column);
+function handleDrop(event, targetColumnId) {
+    event.preventDefault();
+    event.currentTarget.classList.remove('drag-over');
+    const droppedTaskId = event.dataTransfer.getData('text/plain') || draggedTaskId;
+    if (droppedTaskId) moveTask(droppedTaskId, targetColumnId);
 }
 
 // Task actions
 
-function moveTask(taskId, column) {
+function moveTask(taskId, targetColumnId) {
     const task = findTask(taskId);
-    if (!task) return false;
-    task.column = column;
-    saveBoard();
-    return true;
+    if (!task) throw new Error(`moveTask: no ticket ${taskId} on board ${currentBoard.id}`);
+    task.column = targetColumnId;
+    saveBoardsAndRender();
 }
 
-function addTask(fields) {
-    const task = normalizeTask({ id: newId('task'), column: 'backlog', ...fields });
-    board.tasks.push(task);
-    saveBoard();
-    return task;
+function addTask(taskFields) {
+    currentBoard.tasks.push({ id: newId('task'), ...taskFields, createdAt: today(), comments: [] });
+    saveBoardsAndRender();
 }
 
-function addComment(taskId, text) {
-    const task = findTask(taskId);
-    if (!task || !text) return null;
-    const comment = { id: newId('comment'), text, createdAt: new Date().toISOString() };
-    task.comments.push(comment);
-    saveBoard();
-    return comment;
+function addComment(task, commentText) {
+    task.comments.push({ id: newId('comment'), text: commentText, createdAt: new Date().toISOString() });
+    saveBoardsAndRender();
 }
 
 // Modals
 
-function openModal(id) {
-    document.getElementById(id).classList.remove('hidden');
+function openModal(modalId) {
+    document.getElementById(modalId).classList.remove('hidden');
 }
 
-function closeModal(id) {
-    document.getElementById(id).classList.add('hidden');
+function closeModal(modalId) {
+    document.getElementById(modalId).classList.add('hidden');
 }
 
 function openTaskModal(taskId = null) {
@@ -355,153 +343,164 @@ function openTaskModal(taskId = null) {
         renderComments(task);
     }
 
-    modalBlockers = task ? [...task.blockedBy] : [];
+    blockerIdsInTaskModal = task ? [...task.blockedBy] : [];
     renderBlockers();
     openModal('taskModal');
 }
 
-function saveTaskForm(e) {
-    e.preventDefault();
-    const fields = {
+function saveTaskForm(event) {
+    event.preventDefault();
+    const taskFields = {
         title: document.getElementById('taskTitle').value.trim(),
         desc: document.getElementById('taskDesc').value.trim(),
         column: document.getElementById('taskColumn').value,
         dueDate: document.getElementById('taskDueDate').value,
-        blockedBy: modalBlockers
+        blockedBy: blockerIdsInTaskModal
     };
 
-    const task = findTask(document.getElementById('taskId').value);
-    if (task) {
-        Object.assign(task, fields);
-        saveBoard();
-        notify(`Ticket updated: ${task.title}`);
+    const existingTask = findTask(document.getElementById('taskId').value);
+    if (existingTask) {
+        Object.assign(existingTask, taskFields);
+        saveBoardsAndRender();
+        notify(`Ticket updated: ${existingTask.title}`);
     } else {
-        addTask(fields);
-        notify(`Ticket created: ${fields.title}`);
+        addTask(taskFields);
+        notify(`Ticket created: ${taskFields.title}`);
     }
     closeModal('taskModal');
 }
 
 function deleteCurrentTask() {
-    const taskId = document.getElementById('taskId').value;
-    const title = findTask(taskId).title;
-    board.tasks = board.tasks.filter(t => t.id !== taskId);
-    board.tasks.forEach(t => {
-        t.blockedBy = t.blockedBy.filter(id => id !== taskId);
+    const deletedTaskId = document.getElementById('taskId').value;
+    const deletedTaskTitle = findTask(deletedTaskId).title;
+    currentBoard.tasks = currentBoard.tasks.filter(task => task.id !== deletedTaskId);
+    currentBoard.tasks.forEach(task => {
+        task.blockedBy = task.blockedBy.filter(blockerId => blockerId !== deletedTaskId);
     });
-    saveBoard();
+    saveBoardsAndRender();
     closeModal('taskModal');
-    notify(`Ticket deleted: ${title}`);
+    notify(`Ticket deleted: ${deletedTaskTitle}`);
 }
 
-// Blockers (kept in modalBlockers until the form is saved)
+// Blockers (kept in blockerIdsInTaskModal until the form is saved)
 
 function renderBlockers() {
-    const currentId = document.getElementById('taskId').value;
+    const editedTaskId = document.getElementById('taskId').value;
 
-    document.getElementById('blockerList').innerHTML = modalBlockers.map(id => {
-        const blocker = findTask(id);
-        if (!blocker) return '';
+    document.getElementById('blockerList').innerHTML = blockerIdsInTaskModal.map(blockerId => {
+        const blockerTask = findTask(blockerId);
+        if (!blockerTask) return '';
         return `
             <li class="list-item">
-                <span class="${blocker.column === 'done' ? 'done-text' : ''}">${escapeHtml(blocker.title)}</span>
-                <button type="button" onclick="removeBlocker('${id}')" class="icon-btn">
+                <span class="${blockerTask.column === 'done' ? 'done-text' : ''}">${escapeHtml(blockerTask.title)}</span>
+                <button type="button" onclick="removeBlockerFromTaskModal('${blockerId}')" class="icon-btn">
                     &times;
                 </button>
             </li>
         `;
     }).join('');
 
-    const options = board.tasks.filter(t => t.id !== currentId && !modalBlockers.includes(t.id));
+    const selectableBlockerTasks = currentBoard.tasks.filter(task => task.id !== editedTaskId && !blockerIdsInTaskModal.includes(task.id));
     document.getElementById('blockerSelect').innerHTML =
         '<option value="">+ Add blocking ticket...</option>' +
-        options.map(t => `<option value="${t.id}">${escapeHtml(t.title)}</option>`).join('');
+        selectableBlockerTasks.map(task => `<option value="${task.id}">${escapeHtml(task.title)}</option>`).join('');
 }
 
-function addBlocker(id) {
-    if (!id) return;
-    modalBlockers.push(id);
+function addBlockerToTaskModal(blockerId) {
+    if (!blockerId) return;
+    blockerIdsInTaskModal.push(blockerId);
     renderBlockers();
 }
 
-function removeBlocker(id) {
-    modalBlockers = modalBlockers.filter(b => b !== id);
+function removeBlockerFromTaskModal(blockerId) {
+    blockerIdsInTaskModal = blockerIdsInTaskModal.filter(id => id !== blockerId);
     renderBlockers();
 }
 
 // Comments
 
 function renderComments(task) {
-    const list = document.getElementById('commentList');
+    const commentList = document.getElementById('commentList');
     if (!task.comments.length) {
-        list.innerHTML = '<li class="empty">No comments yet.</li>';
+        commentList.innerHTML = '<li class="empty">No comments yet.</li>';
         return;
     }
-    list.innerHTML = task.comments.map(c => `
+    commentList.innerHTML = task.comments.map(comment => `
         <li class="list-item stacked">
-            <div class="item-date">${new Date(c.createdAt).toLocaleString()}</div>
-            <p class="item-text">${escapeHtml(c.text)}</p>
+            <div class="item-date">${new Date(comment.createdAt).toLocaleString()}</div>
+            <p class="item-text">${escapeHtml(comment.text)}</p>
         </li>
     `).join('');
 }
 
 function addCommentFromInput() {
-    const taskId = document.getElementById('taskId').value;
-    const input = document.getElementById('commentInput');
-    if (!addComment(taskId, input.value.trim())) return;
-    input.value = '';
-    renderComments(findTask(taskId));
+    const commentInput = document.getElementById('commentInput');
+    const commentText = commentInput.value.trim();
+    if (!commentText) return;
+    const task = findTask(document.getElementById('taskId').value);
+    addComment(task, commentText);
+    commentInput.value = '';
+    renderComments(task);
 }
 
 // Export
 
-function getBoardState() {
-    return {
-        board: { id: board.id, name: board.name },
-        columns: COLUMNS.map(c => c.id),
-        tasks: board.tasks.map(t => ({ ...t, blocked: isBlocked(t) }))
-    };
-}
-
-function copyBoardJson() {
-    const json = JSON.stringify(getBoardState(), null, 2);
+async function copyCurrentBoardAsJson() {
+    const currentBoardJson = JSON.stringify({
+        board: { id: currentBoard.id, name: currentBoard.name },
+        columns: COLUMNS.map(column => column.id),
+        tasks: currentBoard.tasks.map(task => ({ ...task, blocked: isTaskBlocked(task) }))
+    }, null, 2);
 
     // navigator.clipboard is only available on https / localhost
     if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(json);
+        try {
+            await navigator.clipboard.writeText(currentBoardJson);
+        } catch (error) {
+            notify(`Copying failed: ${error.message}`);
+            return;
+        }
     } else {
-        const textArea = document.createElement('textarea');
-        textArea.value = json;
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textArea);
+        const hiddenTextArea = document.createElement('textarea');
+        hiddenTextArea.value = currentBoardJson;
+        document.body.appendChild(hiddenTextArea);
+        hiddenTextArea.select();
+        const wasCopied = document.execCommand('copy');
+        document.body.removeChild(hiddenTextArea);
+        if (!wasCopied) {
+            notify('Copying failed: the browser blocked clipboard access');
+            return;
+        }
     }
     notify('Board copied as JSON');
 }
 
 // LLM API runs on its own port, so the address shown is this host with that port
-async function showLLMAddress() {
-    const el = document.getElementById('llmAddress');
+async function showLLMAPIAddress() {
+    const llmAddressElement = document.getElementById('llmAddress');
     try {
-        const port = await (await fetch('/api/llm-port')).json();
-        el.innerText = port ? `${location.protocol}//${location.hostname}:${port}` : 'off: start the server with -llm to turn it on';
-    } catch {
-        el.innerText = 'unknown';
+        const response = await fetch('/api/llm-port');
+        if (!response.ok) throw new Error(`server answered ${response.status}`);
+        const llmAPIPort = await response.json();
+        llmAddressElement.innerText = llmAPIPort
+            ? `${location.protocol}//${location.hostname}:${llmAPIPort}`
+            : 'off: start the server with -llm to turn it on';
+    } catch (error) {
+        llmAddressElement.innerText = `unknown (${error.message})`;
     }
 }
 
 // Theme
 
-function applyTheme(theme) {
-    document.documentElement.dataset.theme = theme;
-    document.getElementById('themeToggle').innerText = theme === 'dark' ? 'Light' : 'Dark';
+function applyTheme(themeName) {
+    document.documentElement.dataset.theme = themeName;
+    document.getElementById('themeToggle').innerText = themeName === 'dark' ? 'Light' : 'Dark';
 }
 
 function toggleTheme() {
-    const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-    localStorage.setItem(THEME_KEY, theme);
-    applyTheme(theme);
+    const nextThemeName = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+    localStorage.setItem(THEME_STORAGE_KEY, nextThemeName);
+    applyTheme(nextThemeName);
 }
 
 // Notifications
@@ -518,21 +517,21 @@ function clearNotifications() {
 }
 
 function saveNotifications() {
-    localStorage.setItem(NOTIFICATIONS_KEY, JSON.stringify(notifications));
+    localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, JSON.stringify(notifications));
     renderNotifications();
 }
 
 function renderNotifications() {
     document.getElementById('notificationCount').innerText = notifications.length;
-    const list = document.getElementById('notificationList');
+    const notificationList = document.getElementById('notificationList');
     if (!notifications.length) {
-        list.innerHTML = '<li class="empty">No notifications.</li>';
+        notificationList.innerHTML = '<li class="empty">No notifications.</li>';
         return;
     }
-    list.innerHTML = notifications.map(n => `
+    notificationList.innerHTML = notifications.map(notification => `
         <li class="list-item stacked">
-            <div class="item-date">${new Date(n.createdAt).toLocaleString()}</div>
-            <p class="item-text">${escapeHtml(n.message)}</p>
+            <div class="item-date">${new Date(notification.createdAt).toLocaleString()}</div>
+            <p class="item-text">${escapeHtml(notification.message)}</p>
         </li>
     `).join('');
 }

@@ -33,7 +33,7 @@
                     <ul id="notificationList" class="list"></ul>
                 </div>
             </div>
-            <button onclick="copyBoardJson()" class="btn btn-secondary" title="Copy board as JSON">
+            <button onclick="copyCurrentBoardAsJson()" class="btn btn-secondary" title="Copy board as JSON">
                 Copy JSON
             </button>
             <button onclick="openModal('apiModal')" class="btn btn-secondary" title="Script / LLM API">
@@ -51,7 +51,7 @@
         <button onclick="openTaskModal()" class="btn btn-primary">
             + New Ticket
         </button>
-        <input type="text" id="searchInput" oninput="renderBoard()" placeholder="Filter tickets..." class="input search">
+        <input type="text" id="searchInput" oninput="renderCurrentBoard()" placeholder="Filter tickets..." class="input search">
     </section>
 
     <main id="board" class="board"></main>
@@ -92,7 +92,7 @@
                     <div>
                         <label class="label" for="blockerSelect">Blocked By</label>
                         <ul id="blockerList" class="list"></ul>
-                        <select id="blockerSelect" onchange="addBlocker(this.value)" class="input"></select>
+                        <select id="blockerSelect" onchange="addBlockerToTaskModal(this.value)" class="input"></select>
                     </div>
                 </form>
 
@@ -156,12 +156,16 @@
                 <button onclick="closeModal('apiModal')" class="icon-btn">&times;</button>
             </div>
             <div class="modal-body">
-                <p>Read-only HTTP endpoints at <code id="llmAddress"></code>. This port can't change or delete anything; the board itself runs on a different port.</p>
+                <p>HTTP endpoints at <code id="llmAddress"></code>. This port can read and create boards and tickets, but can't change or delete anything; the board itself runs on a different port.</p>
                 <dl class="api-list">
                     <dt>GET /api/boards</dt>
                     <dd>Every board's id, name, ticket count per column and number of blocked tickets</dd>
                     <dt>GET /api/boards/{id}</dt>
                     <dd>One board's tickets, with comments and a <code>blocked</code> flag</dd>
+                    <dt>POST /api/boards</dt>
+                    <dd>Create a board: <code>{"name"}</code></dd>
+                    <dt>POST /api/boards/{id}/tickets</dt>
+                    <dd>Create a ticket: <code>{"title", "desc", "column", "dueDate", "blockedBy"}</code>, only <code>title</code> required</dd>
                 </dl>
             </div>
         </div>

@@ -80,25 +80,36 @@ journalctl -u scrum-board -f          # view logs
 |---|---|---|
 | `-lan` | off | allow other devices on the network to connect |
 | `-port` | `8080` | port to listen on |
-| `-llm` | off | start the read-only LLM API on its own port |
+| `-llm` | off | start the LLM API on its own port |
 | `-llm-port` | `8081` | port for the LLM API |
 | `-data` | `board.json` | path to the board data file |
 
 ## LLM API
 
-A local LLM or script can read the boards over HTTP on a separate port. It's off by default; start the server with `-llm` to turn it on:
+A local LLM or script can read the boards and create boards and tickets over HTTP on a separate port. It's off by default; start the server with `-llm` to turn it on:
 
 ```bash
 ./scrum-board -llm          # LLM API on port 8081
 ./scrum-board -lan -llm     # both together
 ```
 
-That port only has these two read-only endpoints, so give the LLM this address and not the board's `8080`:
+That port can't change or delete anything, so give the LLM this address and not the board's `8080`:
 
 ```bash
 curl http://localhost:8081/api/boards              # every board with ticket counts per column
 curl http://localhost:8081/api/boards/board-main   # one board's tickets, comments and blocked flags
+
+# create a board; the reply holds its new id
+curl -X POST http://localhost:8081/api/boards -d '{"name": "Sprint 12"}'
+
+# create a ticket; only title is required, column defaults to backlog
+curl -X POST http://localhost:8081/api/boards/board-main/tickets \
+  -d '{"title": "Fix login", "desc": "...", "column": "todo", "dueDate": "2026-11-15", "blockedBy": ["task-abc"]}'
 ```
+
+`column` is one of `backlog`, `todo`, `inprogress`, `review`, `done`, and `blockedBy` lists ticket ids from the same board. A bad request gets a `400` with a message saying what to fix.
+
+An open board tab picks up new boards and tickets within a few seconds. If you save a change at the same moment the LLM creates something, your change isn't saved and the board reloads, so nothing the LLM added gets overwritten; just redo it.
 
 Like the board, it's only reachable from the same machine unless you start with `-lan`.
 
@@ -110,7 +121,7 @@ scp scrum-board you@server:~/scrum-board/scrum-board.new
 ssh you@server 'cd ~/scrum-board && mv scrum-board.new scrum-board && sudo systemctl restart scrum-board'
 ```
 
-`board.json` isn't touched, so your tickets stay. A `board.json` from before multiple boards is converted automatically on first load: its tickets end up in a board called "My Board". Copying to `.new` first and then renaming avoids a "text file busy" error while the old binary is still running.
+`board.json` isn't touched, so your tickets stay. Copying to `.new` first and then renaming avoids a "text file busy" error while the old binary is still running.
 
 ## Backup
 
